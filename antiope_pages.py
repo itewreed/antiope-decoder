@@ -217,6 +217,9 @@ G2_ACCENT = {0x41: "̀", 0x42: "́", 0x43: "̂", 0x48: "̈",
 G2_CHARS = {0x23: "£", 0x24: "$", 0x26: "#", 0x27: "§", 0x2C: "←", 0x2D: "↑",
             0x2E: "→", 0x2F: "↓", 0x30: "°", 0x31: "±", 0x38: "÷", 0x3C: "¼",
             0x3D: "½", 0x3E: "¾", 0x6A: "Œ", 0x7A: "œ", 0x7B: "ß"}
+# G0 positions drawn differently from ASCII (from the screenshots): 7/B and 7/D
+# are thin left/right vertical bars used for frames, 7/E is an overline.
+G0_SPECIAL = {0x7B: "\u258f", 0x7D: "\u2595", 0x7E: "\u203e"}
 COLORS = ["#000", "#f00", "#0f0", "#ff0", "#00f", "#f0f", "#0ff", "#fff"]
 ROWS, COLS = 25, 40
 
@@ -245,38 +248,60 @@ def mosaic(c):
 
 
 class Screen:
-    def __init__(self):
+    def __init__(self, page_bg=0, page_fg=None):
+        if page_fg is None:
+            page_fg = 7 if page_bg == 0 else 0
+        self.page_bg, self.page_fg = page_bg, page_fg
         self.ch = [[" "] * COLS for _ in range(ROWS)]
-        self.fg = [[7] * COLS for _ in range(ROWS)]
-        self.bg = [[0] * COLS for _ in range(ROWS)]
+        self.fg = [[page_fg] * COLS for _ in range(ROWS)]
+        self.bg = [[page_bg] * COLS for _ in range(ROWS)]
+        self.fg[0] = [7] * COLS               # row 0 = status row outside the page area
+        self.bg[0] = [0] * COLS
         self.dh = [[False] * COLS for _ in range(ROWS)]
         self.sz = [["L"] * COLS for _ in range(ROWS)]
         self.mos = [[None] * COLS for _ in range(ROWS)]
+        self.hid = [[False] * COLS for _ in range(ROWS)]
+        self.sepm = [[False] * COLS for _ in range(ROWS)]
+        self.conceal, self.sep, self.inv = False, False, False
         self.r, self.c = 1, 0
-        self.cfg, self.cbg, self.g1, self.size = 7, 0, False, "L"
-        self.last = " "
+        self.cfg, self.cbg, self.g1, self.size = page_fg, page_bg, False, "L"
+        self.last, self.last_m = " ", None
 
     def put(self, s, mbits=None):
         if 0 <= self.r < ROWS and 0 <= self.c < COLS:
             self.ch[self.r][self.c] = s
             self.mos[self.r][self.c] = mbits
+            self.hid[self.r][self.c] = self.conceal
+            self.sepm[self.r][self.c] = self.sep
             self.sz[self.r][self.c] = self.size
-            self.fg[self.r][self.c] = self.cfg
-            self.bg[self.r][self.c] = self.cbg
+            f, b = (self.cbg, self.cfg) if self.inv else (self.cfg, self.cbg)
+            self.fg[self.r][self.c] = f
+            self.bg[self.r][self.c] = b
             self.dh[self.r][self.c] = self.size in "MO"
-        self.last = s
+        self.last, self.last_m = s, mbits
         self.c += 2 if self.size in "NO" else 1
         if self.c >= COLS:
             self.c = 0
             self.r += 1
 
     def attrs_reset(self):
-        self.cfg, self.cbg, self.g1, self.size = 7, 0, False, "L"
+        """Every US starts with the page defaults (checked against screenshots)."""
+        self.cfg, self.cbg, self.g1, self.size = self.page_fg, self.page_bg, False, "L"
+        if self.r == 0:
+            self.cfg, self.cbg = 7, 0
+        self.conceal, self.sep, self.inv = False, False, False
 
 
-def render(body, start):
+def page_background(hdr):
+    """Screen colour: low 3 bits of record header nibble 9 (E cyan, B yellow, F white, A green, 8 black)."""
+    if len(hdr) > 8 and hdr[8] is not None:
+        return hdr[8] & 7
+    return 0
+
+
+def render(body, start, page_bg=0):
     """Interpret Antiope presentation bytes (parity stripped) on a 25x40 screen."""
-    s = Screen()
+    s = Screen(page_bg)
     data = [None if x is None else x & 0x7F for x in body[start:]]
     i = 0
     n = len(data)
@@ -328,13 +353,25 @@ def render(body, start):
                 s.cbg = e - 0x50
             elif e in (0x4C, 0x4D, 0x4E, 0x4F):
                 s.size = chr(e)
+            elif e == 0x58:                   # conceal
+                s.conceal = True
+            elif e == 0x5F:                   # stop conceal
+                s.conceal = False
+            elif e == 0x59:                   # stop lining: contiguous mosaic
+                s.sep = False
+            elif e == 0x5A:                   # start lining: separated mosaic
+                s.sep = True
+            elif e == 0x5C:                   # normal polarity
+                s.inv = False
+            elif e == 0x5D:                   # inverted polarity
+                s.inv = True
             i += 2
             continue
         if x == 0x12:                         # REP
             k = nxt()
             if k is not None and 0x40 <= k < 0x80:
                 for _ in range(k - 0x40):
-                    s.put(s.last)
+                    s.put(s.last, s.last_m)
             i += 2
             continue
         if x == 0x19:                         # SS2 (G2)
@@ -367,7 +404,7 @@ def render(body, start):
         elif x == 0x0B:
             s.r = max(0, s.r - 1)
         elif x == 0x0C:
-            s.__init__()
+            s.__init__(s.page_bg, s.page_fg)
         elif x == 0x18:
             for c in range(s.c, COLS):
                 s.ch[s.r % ROWS][c] = " "
@@ -376,11 +413,23 @@ def render(body, start):
         elif x in (0x03, 0x04):
             pass
         elif x >= 0x20:
-            if s.g1 and (x < 0x40 or x >= 0x60):
+            if s.g1:
+                # columns 4/5 act like 6/7 in G1 (screenshots: 5/F is a full block)
+                if 0x40 <= x < 0x60:
+                    x |= 0x20
                 s.put(mosaic(x), (x & 0x1F) | ((x & 0x40) >> 1))
             else:
-                s.put(chr(x))
+                s.put(G0_SPECIAL.get(x, chr(x)))
         i += 1
+    # Double height grows upwards: the row above takes over the background of
+    # a row that contains double-height characters (matches the screenshots).
+    for r in range(2, ROWS):
+        if any(z in "MO" and ch != " " for z, ch in zip(s.sz[r], s.ch[r])):
+            for c in range(COLS):
+                s.bg[r - 1][c] = s.bg[r][c]
+                if s.sz[r][c] in "MO":
+                    s.ch[r - 1][c] = " "
+                    s.mos[r - 1][c] = None
     return s
 
 
@@ -393,15 +442,20 @@ def screen_html(s, title):
     cells = []
     for r in range(ROWS):
         for c in range(COLS):
-            fgi, bgi = s.fg[r][c], s.bg[r][c]
-            if fgi == bgi and s.ch[r][c] != " ":
-                fgi = 0 if bgi == 7 else 7    # keep text readable (bg model uncertain)
-            fg, bg = COLORS[fgi], COLORS[bgi]
             m = s.mos[r][c]
+            fgi, bgi = s.fg[r][c], s.bg[r][c]
+            if fgi == bgi == 0 and m is None and s.ch[r][c] != " ":
+                fgi = 7                     # screenshots: black-on-black text (e.g. page numbers) shows white
+            fg, bg = COLORS[fgi], COLORS[bgi]
             sz = s.sz[r][c]
             cls = {"M": " dh", "N": " dw", "O": " ds"}.get(sz, "")
+            if s.hid[r][c]:
+                cls += " hid"
+            if m is not None and s.sepm[r][c]:
+                cls += " sep"
             if m is not None:
-                inner = "".join('<i style="background:%s"></i>' % (fg if m >> k & 1 else bg) for k in range(6))
+                on = fg if not s.hid[r][c] else bg
+                inner = "".join('<i style="background:%s"></i>' % (on if m >> k & 1 else bg) for k in range(6))
                 cells.append('<b class="m%s" style="background:%s">%s</b>' % (cls, bg, inner))
             else:
                 cells.append('<b class="t%s" style="color:%s;background:%s">%s</b>' % (
@@ -419,6 +473,11 @@ h3{font-size:12px;font-weight:normal;max-width:480px;margin:0 0 4px}
 .scr b.dh,.scr b.ds{transform-origin:bottom;transform:scaleY(2)}
 .scr b.dw{transform-origin:left;transform:scaleX(2)}
 .scr b.ds{transform-origin:bottom left;transform:scale(2)}
+.scr b.m{overflow:hidden}
+.scr b.m i{display:block;min-width:0;min-height:0}
+.scr b.sep i{margin:1px}
+.scr b.hid{color:transparent!important}
+body.reveal .scr b.hid{color:#888!important}
 """
 
 
@@ -484,7 +543,7 @@ def main():
                 lost = sum(v is None for v in res)
                 bad = sum(1 for v in res if v is not None and not odd(v))
                 hdr = page_header(res)
-                scr = render(res, content_start(res))
+                scr = render(res, content_start(res), page_background(hdr))
                 f0, f1 = c["recs"][0][1], c["recs"][-1][1]
                 name = "ch%s_p%s_v%d" % (chname, num, vi)
                 title = ("Channel %s page %s version %d: %d receptions (frames %d-%d, %s-%s), %d bytes, "
@@ -499,6 +558,8 @@ def main():
                 summary.append("  %s" % title)
     with open(os.path.join(a.outdir, "index.html"), "w") as fo:
         fo.write("<!doctype html><meta charset=utf-8><title>Antiope pages</title><style>%s</style>\n" % CSS
+                 + '<p><label><input type=checkbox onchange="document.body.classList.toggle(\'reveal\',this.checked)">'
+                 + ' reveal concealed text</label></p>\n'
                  + "\n".join(allhtml))
     with open(os.path.join(a.outdir, "summary.txt"), "w") as fo:
         fo.write("\n".join(summary) + "\n")

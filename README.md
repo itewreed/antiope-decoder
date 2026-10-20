@@ -13,6 +13,7 @@ from 30 January 1986. On that tape it recovers pages 001–095 error-free.
 
 - Python 3 with numpy and scipy
 - a C compiler (for the Viterbi equaliser)
+- Pillow (only for `tools/palette_from_screenshots.py`)
 
 ## Usage
 
@@ -94,23 +95,67 @@ continuity index is taken as the previous index plus one.
 
 ## Antiope presentation layer (implemented subset)
 
-- `US row col` positioning (row/column = byte − 0x40; column `A` = 1)
-- `ESC 4/x` foreground and `ESC 5/x` background colour
-- `ESC L/M/N/O` normal, double height, double width and double size
-- `SO`/`SI` for the G1 block mosaic set (2 × 3)
+- `US row col` positioning (row/column = byte − 0x40). Row 0 is the status row
+  above the page area.
+- `ESC 4/x` foreground and `ESC 5/x` background colour: black, red, green,
+  yellow, blue, magenta, cyan, white
+- `ESC L/M/N/O` normal, double height, double width and double size. Double
+  height grows upwards into the row above.
+- `ESC 5/8` and `ESC 5/F` conceal and stop conceal. Concealed text is hidden
+  in `index.html` and can be revealed with a checkbox there.
+- `ESC 5/9` and `ESC 5/A` contiguous and separated mosaic
+- `ESC 5/C` and `ESC 5/D` normal and inverted polarity
+- `SO`/`SI` for the G1 block mosaic set (2 × 3). Columns 4/5 behave like
+  columns 6/7, so 5/F is a full block.
 - `SS2` + accent + letter for accented characters (é, è, ç …) and some G2 symbols
-- `REP` (repeat last character)
-- `CR`, `LF`, `BS`, `HT`, `VT`, `FF`, `CAN`
+- `REP` (repeat last character, including mosaics)
+- G0 7/B and 7/D are thin left and right frame bars, and 7/E is an overline.
 
 Antiope sends positioning and mode controls twice (`US r c US r c`, `SO SO`,
 `ESC x ESC x`), and the decoder drops the repetition. `REP` pairs are real:
 both count, otherwise the columns do not line up.
 
+### Colours (verified against screen photos)
+
+The colour model was checked against 45 photos of the service taken from the
+same broadcast (`tools/palette_from_screenshots.py`). The tool renders each
+decoded page, fits the 40 × 25 grid onto the photo and measures every colour
+code. The findings:
+
+- **Page colour from the record header.** The 9th header nibble gives the
+  screen background in its low 3 bits: `E` cyan, `B` yellow, `F` white,
+  `A` green, `8` black. Default text is black, or white on a black page.
+- **Attributes reset at every `US`.** Each positioned row starts again with the
+  page colours.
+- The colour codes use the standard order. The photos show faded versions of
+  them, measured as median RGB of background cells:
+
+| Code | Colour | Measured on tape | Rendered as |
+| --- | --- | --- | --- |
+| 0 | black | 4 30 51 | `#000` |
+| 1 | red | 248 100 120 | `#f00` |
+| 2 | green | 133 222 97 | `#0f0` |
+| 3 | yellow | 247 255 148 | `#ff0` |
+| 4 | blue | 63 138 177 | `#00f` |
+| 5 | magenta | not seen | `#f0f` |
+| 6 | cyan | 151 255 255 | `#0ff` |
+| 7 | white | 248 255 255 | `#fff` |
+
+Thin coloured text loses most of its colour on VHS, so blue text on yellow or
+cyan looks pale in the photos. The background measurements are the reliable
+ones.
+
+![Screen photo (left) against decoder output (right)](docs/screenshot_vs_decoder.png)
+
+```bash
+python3 tools/palette_from_screenshots.py pages/ photo17.png=062 photo56.png=024 ...
+```
+
 **Known limitations:**
 
-- The background colour model is uncertain. Text that would be drawn in its own
-  background colour is recoloured so that it stays readable.
-- Flashing and conceal are ignored.
+- Flashing and boxing are ignored.
+- Black text on a black background is drawn white, as the photos show for page
+  numbers.
 - `tmpl.npy` and the initial channel taps were estimated from one tape. They
   are re-estimated per chunk, but very different captures may need a new
   template.
