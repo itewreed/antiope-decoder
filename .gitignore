@@ -1,0 +1,5 @@
+libviterbi.so
+__pycache__/
+*.vbi
+*.packets.txt
+pages/
