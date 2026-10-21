@@ -6,6 +6,9 @@ bt848/bttv card. Antiope is carried by the **Didon** packet transport
 
 It was developed on a VHS (LP) recording of Antenne 2's *SAVOIR/A2* service
 from 30 January 1986. On that tape it recovers pages 001–095 error-free.
+A second recording, of TF1 from November 1986, decodes with the same code.
+It carries three magazines: *Antiope 1* (channel 001), *Antiope Route*
+traffic information (004) and the Météo pages (007), about 110 pages in total.
 
 ![Example pages](docs/example_pages.png)
 
@@ -79,9 +82,13 @@ a threshold slicer only yields noise. The demodulator does the following:
    data band.
 3. Each line is aligned by cross-correlation with an averaged packet header
    template (`tmpl.npy`, built from this tape).
-4. The bit clock is nominal (5.7179 samples/bit). For each line it picks the
+4. The data amplitude differs between recordings (the TF1 tape is about 20 %
+   weaker than the A2 tape). If the default channel model finds too few
+   framing codes in a chunk, it is rescaled by the measured run-in level and
+   the chunk is decoded again.
+5. The bit clock is nominal (5.7179 samples/bit). For each line it picks the
    best phase and clock from a small grid by Viterbi path metric.
-5. Bits come from MLSE (Viterbi) equalisation. The channel model has 7 taps
+6. Bits come from MLSE (Viterbi) equalisation. The channel model has 7 taps
    and 64 states, and its taps are re-estimated decision-directed every 250 frames.
 
 With this, 98.3 % of the data bytes have correct parity in a single reception.
@@ -122,9 +129,10 @@ same broadcast (`tools/palette_from_screenshots.py`). The tool renders each
 decoded page, fits the 40 × 25 grid onto the photo and measures every colour
 code. The findings:
 
-- **Page colour from the record header.** The 9th header nibble gives the
-  screen background in its low 3 bits: `E` cyan, `B` yellow, `F` white,
-  `A` green, `8` black. Default text is black, or white on a black page.
+- **Page colour from the record header.** After the page number the header
+  holds groups that start with nibble `8`. The group `8 2 c` or `8 6 c`
+  gives the screen background in the low 3 bits of `c`: `E` cyan, `B` yellow,
+  `F` white, `A` green, `8` black. Default text is black, or white on a black page.
 - **Attributes reset at every `US`.** Each positioned row starts again with the
   page colours.
 - The colour codes use the standard order. The photos show faded versions of

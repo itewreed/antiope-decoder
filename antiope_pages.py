@@ -293,9 +293,17 @@ class Screen:
 
 
 def page_background(hdr):
-    """Screen colour: low 3 bits of record header nibble 9 (E cyan, B yellow, F white, A green, 8 black)."""
-    if len(hdr) > 8 and hdr[8] is not None:
-        return hdr[8] & 7
+    """Screen colour from the record header.
+
+    After the page number the header holds groups starting with nibble 8. The
+    group "8 2 c" or "8 6 c" carries the screen colour in the low 3 bits of c
+    (A2: E cyan, B yellow, F white, A green, 8 black; TF1 pages use 8 black).
+    """
+    i = 3
+    while i + 2 < len(hdr):
+        if hdr[i] == 8 and hdr[i + 1] in (2, 6) and hdr[i + 2] is not None:
+            return hdr[i + 2] & 7
+        i += 1
     return 0
 
 

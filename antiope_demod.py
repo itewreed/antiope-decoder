@@ -25,6 +25,7 @@ P0 = 125.0                       # template position of bit 0
 T = 330                          # bits sampled per line (2 lead + 16 run-in + 8 FC + 38*8)
 LEAD = 2
 NB = 38                          # bytes 3..40
+RUNIN_LEVEL = 78.5               # template run-in mean above black
 M = 6                            # channel memory (taps = M + 1)
 # 3.8 MHz low-pass before bit sampling: removes noise and SECAM chroma
 # residue above the data band (byte parity 96.8 % -> 98.3 % on this tape)
@@ -55,7 +56,7 @@ def process_chunk(args):
     r = load(path)
     ref = tmpl[100:330] - tmpl[100:330].mean()
     rr = np.dot(ref, ref)
-    X, L, info = [], [], []
+    X, L, info, RUN = [], [], [], []
     blk = r[f0:f1].astype(np.float32)
     for fi in range(f1 - f0):
         for li in range(32):
@@ -71,11 +72,19 @@ def process_chunk(args):
                 den = cc[k - 1] - 2 * cc[k] + cc[k + 1]
                 if den != 0:
                     d = (cc[k - 1] - cc[k + 1]) / (2 * den)
+            lag = k + d - 40
+            a = int(round(135 + lag))
+            RUN.append(x[a:a + 77].mean() + 66.0)   # run-in level above black
             X.append(x)
-            L.append(k + d - 40)
+            L.append(lag)
             info.append((f0 + fi, li))
     if not X:
         return []
+    # Data amplitude differs between recordings (TF1 tape: ~20 % below the A2
+    # tape).  The run-in (alternating bits) sits at mid level, so its median
+    # level gives the gain used when the default channel model finds too few
+    # framing codes.
+    gain = float(np.median(RUN)) / RUNIN_LEVEL
     X = np.array(X)
     L = np.array(L)
     grid = np.arange(2048)
@@ -101,6 +110,14 @@ def process_chunk(args):
             break
         by = to_bytes(B)
         ok = by[:, 0] == 0xE7
+        if ok.sum() < 0.3 * len(B) and abs(gain - 1) > 0.1:
+            # default model does not fit this recording: rescale it to the
+            # measured data amplitude and try again
+            c2, g2 = -66.0 + (C0 + 66.0) * gain, G0 * gain
+            B2, cost2, V2 = run(c2, g2)
+            ok2 = to_bytes(B2)[:, 0] == 0xE7
+            if ok2.sum() > ok.sum():
+                c, g, B, cost, V, ok = c2, g2, B2, cost2, V2, ok2
         if ok.sum() < 50:
             break
         # decision-directed LS refit of channel on good lines
