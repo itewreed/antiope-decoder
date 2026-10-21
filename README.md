@@ -12,6 +12,8 @@ traffic information (004) and the Météo pages (007), about 110 pages in total.
 
 ![Example pages](docs/example_pages.png)
 
+*Pages from both tapes, rendered with the bundled Benecia font.*
+
 ## Requirements
 
 - Python 3 with numpy and scipy
@@ -48,6 +50,21 @@ frame line quality b3 b4 ... b40      # hex bytes, b3 = framing code E7
 
 Further versions of a page appear when its content changed during the
 recording. A version needs at least `--min-receptions` (default 2) receptions.
+
+## Font
+
+`index.html` is rendered with **Benecia**, a 9 × 10 pixel font in the style of
+the Antiope terminals. It is in `fonts/benecia/` (`.otf`, `.ttf` and `.woff2`,
+with the original `license.txt` and `readme.txt`). The woff2 file is embedded
+into `index.html` as a data URI, so the page stays a single file. It is drawn
+at 18 px, where every font pixel is 2 × 2 screen pixels. Characters the font
+lacks, such as arrows and frame bars, fall back to the system monospace font.
+`--font PATH` selects another font file, and `--font ""` uses the system
+monospace font.
+
+> The FontStruction “Benecia” (https://fontstruct.com/fontstructions/show/2950541)
+> by Monique Sammi Brie is licensed under a Creative Commons CC0 Public Domain
+> Dedication license (http://creativecommons.org/publicdomain/zero/1.0/).
 
 ## Didon packet layout (system A)
 

@@ -471,12 +471,21 @@ def screen_html(s, title):
     return '<div class="page"><h3>%s</h3><div class="scr">%s</div></div>' % (html.escape(title), "".join(cells))
 
 
+# Benecia (FontStruction by Monique Sammi Brie, CC0) is a 9 x 10 pixel font in
+# the style of the Antiope terminals.  At 18 px each font pixel is 2 x 2 screen
+# pixels; glyphs it lacks (arrows, frame bars) fall back to a monospace font.
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "benecia")
+FONT_FILE = os.path.join(FONT_DIR, "benecia.otf.woff2")
+FONT_CREDIT = ("Font: Benecia (https://fontstruct.com/fontstructions/show/2950541) "
+               "by Monique Sammi Brie, CC0 1.0 Public Domain Dedication")
+
 CSS = """body{background:#222;color:#ddd;font-family:sans-serif}
 .page{display:inline-block;margin:10px;vertical-align:top}
-h3{font-size:12px;font-weight:normal;max-width:480px;margin:0 0 4px}
-.scr{display:grid;grid-template-columns:repeat(40,12px);grid-auto-rows:18px;background:#000;padding:6px;
- font-family:'DejaVu Sans Mono','Courier New',monospace;font-size:15px;line-height:18px}
-.scr b{font-weight:normal;display:block;overflow:visible;text-align:center;white-space:pre}
+h3{font-size:12px;font-weight:normal;max-width:720px;margin:0 0 4px}
+.scr{display:grid;grid-template-columns:repeat(40,18px);grid-auto-rows:20px;background:#000;padding:8px;
+ font-family:'Benecia','DejaVu Sans Mono','Courier New',monospace;font-size:18px;line-height:20px;
+ -webkit-font-smoothing:none;font-smooth:never;font-kerning:none}
+.scr b{font-weight:normal;display:block;overflow:visible;text-align:left;white-space:pre}
 .scr b.m{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr 1fr}
 .scr b.dh,.scr b.ds{transform-origin:bottom;transform:scaleY(2)}
 .scr b.dw{transform-origin:left;transform:scaleX(2)}
@@ -486,7 +495,19 @@ h3{font-size:12px;font-weight:normal;max-width:480px;margin:0 0 4px}
 .scr b.sep i{margin:1px}
 .scr b.hid{color:transparent!important}
 body.reveal .scr b.hid{color:#888!important}
+footer{font-size:11px;color:#999;margin:10px}
 """
+
+
+def font_css(path=FONT_FILE):
+    """@font-face with the font embedded as data URI (output stays one file)."""
+    if not path or not os.path.exists(path):
+        return ""
+    import base64
+    data = base64.b64encode(open(path, "rb").read()).decode()
+    fmt = "woff2" if path.endswith(".woff2") else ("opentype" if path.endswith(".otf") else "truetype")
+    mime = {"woff2": "font/woff2", "opentype": "font/otf", "truetype": "font/ttf"}[fmt]
+    return "@font-face{font-family:'Benecia';src:url(data:%s;base64,%s) format('%s')}\n" % (mime, data, fmt)
 
 
 def content_start(body):
@@ -513,6 +534,8 @@ def main():
     ap.add_argument("packets")
     ap.add_argument("outdir")
     ap.add_argument("--channel", default=None, help="e.g. 0,7,11 (default: all)")
+    ap.add_argument("--font", default=FONT_FILE,
+                    help="font for index.html (default: bundled Benecia woff2; empty string = system monospace)")
     ap.add_argument("--min-receptions", type=int, default=2,
                     help="further versions of a page need this many receptions")
     a = ap.parse_args()
@@ -565,10 +588,13 @@ def main():
                 allhtml.append(screen_html(scr, title))
                 summary.append("  %s" % title)
     with open(os.path.join(a.outdir, "index.html"), "w") as fo:
-        fo.write("<!doctype html><meta charset=utf-8><title>Antiope pages</title><style>%s</style>\n" % CSS
+        font = font_css(a.font) if a.font else ""
+        fo.write("<!doctype html><meta charset=utf-8><title>Antiope pages</title><style>%s%s</style>\n"
+                 % (font, CSS)
                  + '<p><label><input type=checkbox onchange="document.body.classList.toggle(\'reveal\',this.checked)">'
                  + ' reveal concealed text</label></p>\n'
-                 + "\n".join(allhtml))
+                 + "\n".join(allhtml)
+                 + ("\n<footer>%s</footer>\n" % html.escape(FONT_CREDIT) if font else ""))
     with open(os.path.join(a.outdir, "summary.txt"), "w") as fo:
         fo.write("\n".join(summary) + "\n")
     print("\n".join(summary[:60]))
