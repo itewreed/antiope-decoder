@@ -19,7 +19,7 @@ import antiope_pages as P  # noqa: E402
 def load_page(path):
     raw = list(open(path, "rb").read())
     hdr = P.page_header(raw)
-    return P.render(raw, P.content_start(raw), P.page_background(hdr))
+    return P.render(raw, P.content_start(raw), P.header_defaults(P.parse_header(hdr)))
 
 
 def cell_stats(img, x0, y0, cw, ch):

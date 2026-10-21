@@ -77,16 +77,36 @@ monospace font.
 | 8 | format (data block length code), Hamming 8/4 |
 | 9– | data block, 7-bit bytes with odd parity, LSB first |
 
-The bit rate is 6.203125 Mbit/s (397 × line frequency), NRZ. On the reference
-tape every packet uses format B, which gives 32 data bytes and 40 bytes per line.
+The bit rate is 6.203125 Mbit/s (397 × line frequency), NRZ. The format nibble
+selects the data length from a list (spec ch. 1 annex 2). List 1 is used:
+0, 1, 2, 3, 4, 8, 12 … 48 bytes for F = 0 … F. A 40-byte line holds at most
+F = B (32 bytes), which is what both tapes use. Packets with F = 0 carry no
+data, and a continuity break next to them is not counted as a loss (ch. 1
+sec. 5.3).
 
 On the reference tape, channel `07B` carries the pages. Channel `063` carries
 a status line, and `E99` on line 25 carries 8-bit binary data, probably a test
 sequence.
 
-Each channel's data stream contains Antiope data groups. A group starts with
-`SOH RS` followed by a Hamming-coded record header. Its first three nibbles are
-the page number, for example `0 2 8` for page 28. The group ends with `ETX EOT`.
+Each channel's data stream contains Antiope *articles* (spec ch. 4). An
+article is `SOH RS`, a Hamming-coded header, the data field and `ETX EOT`.
+The header (all nibbles, bit 0 = b2 … bit 3 = b8) is:
+
+| Field | Meaning |
+| --- | --- |
+| C1 C2 C3 | classification: `000` = row 0 (status row), `001`–`999` = page number, `A` = wildcard digit, `B`–`F` = reserved |
+| L | link byte: b2 b4 b6 = part number of a split article, b8 = last part |
+| Y01 | designation byte: b4, b6, b8 announce the pairs (Y11, Y12), (Y13, Y14), (Y15, Y16); b2 announces Y02 |
+| Y11–Y16 | protocol, page type (cover, index, scrolling, alarm), update and series flags, language, resources, encryption |
+| Y02 | designation byte for Y21–Y26, same scheme |
+| Y21 | default background: b8 = 1 opaque with colour b2 = R, b4 = G, b6 = B; b8 = 0 transparent |
+| Y22 | conceal and latent defaults |
+| Y23 | default double width (b2), double height (b4), lining (b6), flash (b8) |
+| Y24 | default character colour (b2 b4 b6 = R G B) and negative (b8) |
+
+Missing bytes take the defaults of spec ch. 4 annex 2 figure 1 (transparent
+background, white characters, single size). The decoder parses this header
+and uses Y21–Y24 as the page's attribute defaults.
 
 ## Signal processing
 
@@ -121,23 +141,35 @@ continuity index is taken as the previous index plus one.
 
 - `US row col` positioning (row/column = byte − 0x40). Row 0 is the status row
   above the page area.
+Codes follow spec ch. 3 (C1 table 1, G0/G1/G2 figures 3–5) and the level 1
+broadcast conventions of ch. 4 annex 3.
+
 - `ESC 4/x` foreground and `ESC 5/x` background colour: black, red, green,
-  yellow, blue, magenta, cyan, white
+  yellow, blue, magenta, cyan, white. `ESC 5/E` transparent background (drawn
+  black, as there is no TV picture behind it).
 - `ESC L/M/N/O` normal, double height, double width and double size. Double
   height grows upwards into the row above.
+- `ESC 4/8` and `ESC 4/9` flash on and off (blinks in `index.html`)
 - `ESC 5/8` and `ESC 5/F` conceal and stop conceal. Concealed text is hidden
   in `index.html` and can be revealed with a checkbox there.
-- `ESC 5/9` and `ESC 5/A` contiguous and separated mosaic
-- `ESC 5/C` and `ESC 5/D` normal and inverted polarity
-- `SO`/`SI` for the G1 block mosaic set (2 × 3). Columns 4/5 behave like
-  columns 6/7, so 5/F is a full block.
-- `SS2` + accent + letter for accented characters (é, è, ç …) and some G2 symbols
-- `REP` (repeat last character, including mosaics)
-- G0 7/B and 7/D are thin left and right frame bars, and 7/E is an overline.
+- `ESC 5/A` and `ESC 5/9` lining on and off: underlined text, separated mosaics
+- `ESC 5/C` and `ESC 5/D` positive and negative (not applied to mosaics)
+- `ESC 4/A` and `ESC 4/B` latent state are ignored (they only matter in TV mode)
+- Attribute levels (ch. 3 sec. 4.1): `US` and `FF` return to the article
+  defaults from the header, `RS` to the highest-level defaults.
+- `SO`/`SI` for the G1 block mosaic set (2 × 3). In G1 only 5/F is defined in
+  columns 4/5, as a full block.
+- `SS2` + accent + letter for accented characters, and the full G2 symbol set
+- `REP` (repeat last character, including mosaics). `CAN` writes spaces with
+  the current attributes to the end of the row.
+- G0 6/0 is a horizontal bar, 7/C a vertical bar, 7/B and 7/D are drawn as
+  vertical bars at the left and right cell edge (the spec's fallback for
+  braces), and 7/E is an overline.
 
-Antiope sends positioning and mode controls twice (`US r c US r c`, `SO SO`,
-`ESC x ESC x`), and the decoder drops the repetition. `REP` pairs are real:
-both count, otherwise the columns do not line up.
+In broadcast, positioning and mode controls are sent twice for protection
+(`US r c US r c`, `SO SO`, `ESC x ESC x`; ch. 4 annex 3), and the decoder drops
+the repetition. `REP x REP x` is also sent twice, but there each `x` is half
+of the count, so both are executed.
 
 ### Colours (verified against screen photos)
 
@@ -146,12 +178,11 @@ same broadcast (`tools/palette_from_screenshots.py`). The tool renders each
 decoded page, fits the 40 × 25 grid onto the photo and measures every colour
 code. The findings:
 
-- **Page colour from the record header.** After the page number the header
-  holds groups that start with nibble `8`. The group `8 2 c` or `8 6 c`
-  gives the screen background in the low 3 bits of `c`: `E` cyan, `B` yellow,
-  `F` white, `A` green, `8` black. Default text is black, or white on a black page.
+- **Page colour from the record header** (Y21, see above): `E` cyan, `B`
+  yellow, `F` white, `A` green, `8` black. The A2 pages set the default
+  character colour to black (Y24 = 0); pages without Y24 get white.
 - **Attributes reset at every `US`.** Each positioned row starts again with the
-  page colours.
+  page defaults.
 - The colour codes use the standard order. The photos show faded versions of
   them, measured as median RGB of background cells:
 
@@ -178,15 +209,21 @@ python3 tools/palette_from_screenshots.py pages/ photo17.png=062 photo56.png=024
 
 **Known limitations:**
 
-- Flashing and boxing are ignored.
-- Black text on a black background is drawn white, as the photos show for page
-  numbers.
+- Size conflicts between overlapping double-size characters (ch. 2 sec. 10)
+  are not resolved.
+- Split articles (link byte other than `8`) are not joined; none occur on the
+  two tapes.
 - `tmpl.npy` and the initial channel taps were estimated from one tape. They
   are re-estimated per chunk, but very different captures may need a new
   template.
 
 ## References
 
+- TDF, *Spécification du système de télétexte ANTIOPE / DIDON*, document
+  1.82, version D2 A4-2 (September 1981): ch. 1 Didon packets, ch. 2–3
+  presentation layer and code tables, ch. 4 article structure and broadcast
+  conventions. Pages 18–19 (initialisation and cursor movements) are missing
+  from the scan used here.
 - ITU-R BT.653-3, *Teletext systems*, Table 1a, system A
 - US patent 4633462, which describes the Didon header layout
 - US patent 4636859, *Didon digital demodulator*

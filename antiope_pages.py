@@ -33,7 +33,10 @@ def _ham_table():
 
 
 HDEC = _ham_table()
-DATA_LEN = {11: 32}       # format -> data block length (only F=B seen on this tape)
+# Data block length per format nibble F (TDF Didon spec ch. 1 annex 2, list 1;
+# the list in use is a magazine convention, list 1 is the one seen on air).
+# A 40-byte line holds at most 32 data bytes (F = B).
+DATA_LEN = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 8, 6: 12, 7: 16, 8: 20, 9: 24, 10: 28, 11: 32}
 MISSING = None            # placeholder for bytes of lost packets
 
 
@@ -74,16 +77,22 @@ def channel_streams(packets, max_gap_frames=2):
             fmt = 11
         if fmt not in DATA_LEN:
             continue
+        if fmt == 0:
+            # empty (filler) packet: no data, and per spec ch. 1 sec. 5.3 a
+            # continuity break next to it is not a loss
+            if a in last:
+                last[a] = (fi, None)
+            continue
         ci = HDEC[b[4]]
         if ci is None:
-            ci = (last[a][1] + 1) % 16 if a in last else None
+            ci = (last[a][1] + 1) % 16 if a in last and last[a][1] is not None else None
             if ci is None:
                 continue
         data = list(b[6:6 + DATA_LEN[fmt]])
         st = streams[a]
         if a in last:
             pf, pci = last[a]
-            miss = (ci - pci - 1) % 16
+            miss = 0 if pci is None else (ci - pci - 1) % 16
             if fi - pf > max_gap_frames:
                 st.append((fi, "BREAK"))
             elif miss == 15:          # duplicate / repeated packet
@@ -192,6 +201,54 @@ def page_header(body):
     return nib
 
 
+
+# Defaults of the interpretation bytes (spec ch. 4 annex 2, figure 1) as nibble
+# values, bit 0 = b2 ... bit 3 = b8.
+Y_DEFAULTS = {"11": 0, "12": 0, "13": 0, "14": 8, "15": 0, "16": 8,
+              "21": 0, "22": 0, "23": 0, "24": 7}
+
+
+def parse_header(nib):
+    """Article header after SOH RS (spec ch. 4 sec. 2.2).
+
+    C1 C2 C3 (classification, decimal page number for 0-9), L (link byte:
+    b2 b4 b6 = part number, b8 = last part), then designation bytes Y0i.  In
+    Y0i, b4/b6/b8 announce the pairs (Yi1,Yi2)/(Yi3,Yi4)/(Yi5,Yi6) and b2 a
+    further designation byte.  Returns a dict with C, L, Y (all Yij with
+    defaults filled in) and n (number of header nibbles).
+    """
+    h = {"C": nib[:3], "L": nib[3] if len(nib) > 3 else None, "Y": dict(Y_DEFAULTS), "n": len(nib)}
+    i, k = 4, 1
+    while i < len(nib):
+        y0 = nib[i]
+        if y0 is None:
+            break
+        i += 1
+        for bit, pair in ((2, 1), (4, 3), (8, 5)):
+            if y0 & bit:
+                for j in (pair, pair + 1):
+                    if i < len(nib):
+                        if nib[i] is not None:
+                            h["Y"]["%d%d" % (k, j)] = nib[i]
+                        i += 1
+        k += 1
+        if not y0 & 1:
+            break
+    h["n"] = i
+    return h
+
+
+def header_defaults(h):
+    """Article-level ('level 2') attribute values from Y21..Y24."""
+    y = h["Y"]
+    return {
+        "bg": (y["21"] & 7) if y["21"] & 8 else None,   # b8 = 0: transparent
+        "conceal": bool(y["22"] & 2),
+        "dw": bool(y["23"] & 1), "dh": bool(y["23"] & 2),
+        "lining": bool(y["23"] & 4), "flash": bool(y["23"] & 8),
+        "fg": y["24"] & 7, "inv": bool(y["24"] & 8),
+    }
+
 def vote(bodies):
     n = max(len(b) for b in bodies)
     res, conf = [], []
@@ -212,14 +269,18 @@ def vote(bodies):
 
 
 # ---------------------------------------------------------------- rendering
-G2_ACCENT = {0x41: "̀", 0x42: "́", 0x43: "̂", 0x48: "̈",
-             0x4B: "̧", 0x4A: "̊", 0x44: "̃"}
-G2_CHARS = {0x23: "£", 0x24: "$", 0x26: "#", 0x27: "§", 0x2C: "←", 0x2D: "↑",
-            0x2E: "→", 0x2F: "↓", 0x30: "°", 0x31: "±", 0x38: "÷", 0x3C: "¼",
-            0x3D: "½", 0x3E: "¾", 0x6A: "Œ", 0x7A: "œ", 0x7B: "ß"}
-# G0 positions drawn differently from ASCII (from the screenshots): 7/B and 7/D
-# are thin left/right vertical bars used for frames, 7/E is an overline.
-G0_SPECIAL = {0x7B: "\u258f", 0x7D: "\u2595", 0x7E: "\u203e"}
+# G2 (spec ch. 3 fig. 5): column 4 = non-spacing accents, the rest symbols.
+G2_ACCENT = {0x41: "\u0300", 0x42: "\u0301", 0x43: "\u0302", 0x44: "\u0303",
+             0x45: "\u0304", 0x46: "\u0306", 0x47: "\u0307", 0x48: "\u0308",
+             0x4A: "\u030A", 0x4B: "\u0327", 0x4D: "\u030B", 0x4E: "\u0328",
+             0x4F: "\u030C"}
+G2_CHARS = dict(zip(range(0x21, 0x40), "¡¢£$¥#§¤‘“«←↑→↓°±²³×µ¶·÷’”»¼½¾¿"))
+G2_CHARS.update({0x50: "\u2015"})
+G2_CHARS.update(dict(zip(range(0x60, 0x7F), "ΩÆĐªĦ\ufffdĲĿŁØŒºÞŦŊŉĸæđðħıĳŀłøœßþŧŋ")))
+# G0 positions that differ from ASCII (spec ch. 3 fig. 3 and ch. 4 annex 4):
+# 6/0 is a horizontal bar, 7/B and 7/D are drawn as vertical bars at the left
+# and right cell edge (fallback for braces), 7/E is an overline.
+G0_SPECIAL = {0x60: "\u2500", 0x7B: "\u258f", 0x7D: "\u2595", 0x7E: "\u203e"}
 COLORS = ["#000", "#f00", "#0f0", "#ff0", "#00f", "#f0f", "#0ff", "#fff"]
 ROWS, COLS = 25, 40
 
@@ -247,14 +308,23 @@ def mosaic(c):
     return chr(0x1FB00 + idx)
 
 
+TRANSPARENT = 8                        # background index for "fond transparent"
+LEVEL3 = {"bg": 0, "conceal": False, "dw": False, "dh": False, "lining": False,
+          "flash": False, "fg": 7, "inv": False}   # spec ch. 3 sec. 4.1 defaults
+
+
 class Screen:
-    def __init__(self, page_bg=0, page_fg=None):
-        if page_fg is None:
-            page_fg = 7 if page_bg == 0 else 0
-        self.page_bg, self.page_fg = page_bg, page_fg
+    """Attribute levels follow spec ch. 3 sec. 4.1: US and FF fall back to the
+    article level (header Y21..Y24), RS to the highest-level defaults."""
+
+    def __init__(self, defaults=None):
+        self.level2 = dict(LEVEL3, **{k: v for k, v in (defaults or {}).items()})
+        if self.level2["bg"] is None:
+            self.level2["bg"] = TRANSPARENT
+        d = self.level2
         self.ch = [[" "] * COLS for _ in range(ROWS)]
-        self.fg = [[page_fg] * COLS for _ in range(ROWS)]
-        self.bg = [[page_bg] * COLS for _ in range(ROWS)]
+        self.fg = [[d["fg"]] * COLS for _ in range(ROWS)]
+        self.bg = [[d["bg"]] * COLS for _ in range(ROWS)]
         self.fg[0] = [7] * COLS               # row 0 = status row outside the page area
         self.bg[0] = [0] * COLS
         self.dh = [[False] * COLS for _ in range(ROWS)]
@@ -262,9 +332,10 @@ class Screen:
         self.mos = [[None] * COLS for _ in range(ROWS)]
         self.hid = [[False] * COLS for _ in range(ROWS)]
         self.sepm = [[False] * COLS for _ in range(ROWS)]
-        self.conceal, self.sep, self.inv = False, False, False
+        self.fl = [[False] * COLS for _ in range(ROWS)]
         self.r, self.c = 1, 0
-        self.cfg, self.cbg, self.g1, self.size = page_fg, page_bg, False, "L"
+        self.g1 = False
+        self.attrs_reset()
         self.last, self.last_m = " ", None
 
     def put(self, s, mbits=None):
@@ -273,43 +344,40 @@ class Screen:
             self.mos[self.r][self.c] = mbits
             self.hid[self.r][self.c] = self.conceal
             self.sepm[self.r][self.c] = self.sep
-            self.sz[self.r][self.c] = self.size
-            f, b = (self.cbg, self.cfg) if self.inv else (self.cfg, self.cbg)
+            self.fl[self.r][self.c] = self.flash
+            # size and polarity do not apply to mosaics (spec ch. 2 sec. 5.2)
+            self.sz[self.r][self.c] = self.size if mbits is None else "L"
+            inv = self.inv and mbits is None
+            f, b = (self.cbg, self.cfg) if inv else (self.cfg, self.cbg)
             self.fg[self.r][self.c] = f
             self.bg[self.r][self.c] = b
-            self.dh[self.r][self.c] = self.size in "MO"
+            self.dh[self.r][self.c] = self.size in "MO" and mbits is None
         self.last, self.last_m = s, mbits
-        self.c += 2 if self.size in "NO" else 1
+        self.c += 2 if self.size in "NO" and mbits is None else 1
         if self.c >= COLS:
             self.c = 0
             self.r += 1
 
+    def set_level(self, d):
+        self.cfg, self.cbg, self.inv = d["fg"], d["bg"], d["inv"]
+        self.size = {(False, False): "L", (False, True): "M", (True, False): "N", (True, True): "O"}[
+            (d["dw"], d["dh"])]
+        self.conceal, self.sep, self.flash = d["conceal"], d["lining"], d["flash"]
+
     def attrs_reset(self):
-        """Every US starts with the page defaults (checked against screenshots)."""
-        self.cfg, self.cbg, self.g1, self.size = self.page_fg, self.page_bg, False, "L"
+        """US / FF: back to the article level (header defaults)."""
+        self.set_level(self.level2)
+        self.g1 = False                       # US designates G0 (spec ch. 3 sec. 6.4)
         if self.r == 0:
             self.cfg, self.cbg = 7, 0
-        self.conceal, self.sep, self.inv = False, False, False
 
 
-def page_background(hdr):
-    """Screen colour from the record header.
+def render(body, start, defaults=None):
+    """Interpret Antiope presentation bytes (parity stripped) on a 25x40 screen.
 
-    After the page number the header holds groups starting with nibble 8. The
-    group "8 2 c" or "8 6 c" carries the screen colour in the low 3 bits of c
-    (A2: E cyan, B yellow, F white, A green, 8 black; TF1 pages use 8 black).
+    defaults: article-level attributes from header_defaults().
     """
-    i = 3
-    while i + 2 < len(hdr):
-        if hdr[i] == 8 and hdr[i + 1] in (2, 6) and hdr[i + 2] is not None:
-            return hdr[i + 2] & 7
-        i += 1
-    return 0
-
-
-def render(body, start, page_bg=0):
-    """Interpret Antiope presentation bytes (parity stripped) on a 25x40 screen."""
-    s = Screen(page_bg)
+    s = Screen(defaults)
     data = [None if x is None else x & 0x7F for x in body[start:]]
     i = 0
     n = len(data)
@@ -359,20 +427,28 @@ def render(body, start, page_bg=0):
                 s.cfg = e - 0x40
             elif 0x50 <= e <= 0x57:
                 s.cbg = e - 0x50
-            elif e in (0x4C, 0x4D, 0x4E, 0x4F):
+            elif e in (0x4C, 0x4D, 0x4E, 0x4F):  # normal/double height/width/size
                 s.size = chr(e)
-            elif e == 0x58:                   # conceal
+            elif e == 0x48:                   # flash on
+                s.flash = True
+            elif e == 0x49:                   # flash off
+                s.flash = False
+            elif e in (0x4A, 0x4B):           # latent state on/off: TV-mode only, ignored
+                pass
+            elif e == 0x58:                   # conceal on
                 s.conceal = True
-            elif e == 0x5F:                   # stop conceal
+            elif e == 0x5F:                   # conceal off
                 s.conceal = False
-            elif e == 0x59:                   # stop lining: contiguous mosaic
+            elif e == 0x59:                   # lining off (underline / contiguous mosaic)
                 s.sep = False
-            elif e == 0x5A:                   # start lining: separated mosaic
+            elif e == 0x5A:                   # lining on (underline / separated mosaic)
                 s.sep = True
-            elif e == 0x5C:                   # normal polarity
+            elif e == 0x5C:                   # positive
                 s.inv = False
-            elif e == 0x5D:                   # inverted polarity
+            elif e == 0x5D:                   # negative
                 s.inv = True
+            elif e == 0x5E:                   # transparent background
+                s.cbg = TRANSPARENT
             i += 2
             continue
         if x == 0x12:                         # REP
@@ -411,13 +487,17 @@ def render(body, start, page_bg=0):
             s.c += 1
         elif x == 0x0B:
             s.r = max(0, s.r - 1)
-        elif x == 0x0C:
-            s.__init__(s.page_bg, s.page_fg)
-        elif x == 0x18:
-            for c in range(s.c, COLS):
-                s.ch[s.r % ROWS][c] = " "
-        elif x == 0x1E:
+        elif x == 0x0C:                       # FF: clear screen, home
+            s.__init__(s.level2)
+        elif x == 0x18:                       # CAN: spaces with current attributes to end of row
+            r0, c0 = s.r, s.c
+            while s.r == r0 and s.c < COLS:
+                s.put(" ")
+            s.r, s.c = r0, c0
+        elif x == 0x1E:                       # RS: home, highest-level defaults
             s.r, s.c = 1, 0
+            s.set_level(LEVEL3)
+            s.g1 = False
         elif x in (0x03, 0x04):
             pass
         elif x >= 0x20:
@@ -451,9 +531,8 @@ def screen_html(s, title):
     for r in range(ROWS):
         for c in range(COLS):
             m = s.mos[r][c]
-            fgi, bgi = s.fg[r][c], s.bg[r][c]
-            if fgi == bgi == 0 and m is None and s.ch[r][c] != " ":
-                fgi = 7                     # screenshots: black-on-black text (e.g. page numbers) shows white
+            # transparent background: no TV picture behind it here, draw black
+            fgi, bgi = (0 if v == TRANSPARENT else v for v in (s.fg[r][c], s.bg[r][c]))
             fg, bg = COLORS[fgi], COLORS[bgi]
             sz = s.sz[r][c]
             cls = {"M": " dh", "N": " dw", "O": " ds"}.get(sz, "")
@@ -461,6 +540,10 @@ def screen_html(s, title):
                 cls += " hid"
             if m is not None and s.sepm[r][c]:
                 cls += " sep"
+            if m is None and s.sepm[r][c]:
+                cls += " ul"
+            if s.fl[r][c]:
+                cls += " fl"
             if m is not None:
                 on = fg if not s.hid[r][c] else bg
                 inner = "".join('<i style="background:%s"></i>' % (on if m >> k & 1 else bg) for k in range(6))
@@ -493,6 +576,9 @@ h3{font-size:12px;font-weight:normal;max-width:720px;margin:0 0 4px}
 .scr b.m{overflow:hidden}
 .scr b.m i{display:block;min-width:0;min-height:0}
 .scr b.sep i{margin:1px}
+.scr b.ul{text-decoration:underline}
+.scr b.fl{animation:fl 2s step-end infinite}
+@keyframes fl{50%{color:transparent}}
 .scr b.hid{color:transparent!important}
 body.reveal .scr b.hid{color:#888!important}
 footer{font-size:11px;color:#999;margin:10px}
@@ -574,7 +660,11 @@ def main():
                 lost = sum(v is None for v in res)
                 bad = sum(1 for v in res if v is not None and not odd(v))
                 hdr = page_header(res)
-                scr = render(res, content_start(res), page_background(hdr))
+                h = parse_header(hdr)
+                start = (2 if res and res[0] is not None and res[0] & 0x7F == 0x01 else 1) + h["n"]
+                if None in hdr[:h["n"]] or start >= len(res) or res[start] is None or res[start] & 0x7F != 0x1F:
+                    start = content_start(res)
+                scr = render(res, start, header_defaults(h))
                 f0, f1 = c["recs"][0][1], c["recs"][-1][1]
                 name = "ch%s_p%s_v%d" % (chname, num, vi)
                 title = ("Channel %s page %s version %d: %d receptions (frames %d-%d, %s-%s), %d bytes, "
